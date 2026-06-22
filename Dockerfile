@@ -124,7 +124,7 @@ RUN mkdir -p /app/apps/mercato/storage
 
 # Create non-root user and grant passwordless sudo for chown only
 RUN adduser -D -u 1001 omuser \
- && chown -R omuser:omuser /app/apps/mercato/storage \
+ && chown -R omuser:omuser /app \
  && echo "omuser ALL=(root) NOPASSWD: /bin/chown" > /etc/sudoers.d/omuser \
  && chmod 0440 /etc/sudoers.d/omuser
 
