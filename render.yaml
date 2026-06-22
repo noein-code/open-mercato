@@ -1,0 +1,61 @@
+# Render Blueprint for Open Mercato (test/demo deploy).
+# Web (Docker) + Postgres (pgvector) + Key Value (Redis) + a small disk that
+# persists the one-time init marker and file attachments. DB migrate/seed runs
+# in preDeployCommand so a slow first boot doesn't trip the health check.
+services:
+  - type: web
+    name: open-mercato
+    runtime: docker
+    plan: standard            # 2 GB — Next.js runtime + local workers
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /
+    disk:
+      name: om-storage
+      mountPath: /app/apps/mercato/storage
+      sizeGB: 1
+    # Runs once before traffic switches: chown the mounted disk, then
+    # `yarn mercato init` on first deploy / `db:migrate` thereafter.
+    preDeployCommand: >-
+      sh -c 'sudo chown -R omuser:omuser /app/apps/mercato/storage 2>/dev/null || true;
+      INIT_MARKER_FILE=/app/apps/mercato/storage/.initialized
+      INIT_COMMAND="yarn mercato init"
+      sh /app/docker/scripts/init-or-migrate.sh'
+    # Start: bind the public URL from Render, then run the Next.js server.
+    dockerCommand: >-
+      sh -c 'export APP_URL="${RENDER_EXTERNAL_URL:-http://localhost:3000}";
+      export NEXT_PUBLIC_APP_URL="$APP_URL"; exec yarn start'
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DEMO_MODE
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: om-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: om-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: AUTH_SECRET
+        generateValue: true
+
+  - type: keyvalue
+    name: om-redis
+    plan: free
+    region: oregon
+    ipAllowList: []
+    maxmemoryPolicy: noeviction
+
+databases:
+  - name: om-postgres
+    databaseName: open_mercato
+    plan: free
+    region: oregon
+    postgresMajorVersion: "16"
+    ipAllowList: []
