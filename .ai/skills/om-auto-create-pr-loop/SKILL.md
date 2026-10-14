@@ -1,6 +1,6 @@
 ---
 name: om-auto-create-pr-loop
-description: Advanced `om-auto-create-pr` workflow for long, multi-step spec implementations that need resumability and strict step tracking. Creates a run folder under `.ai/runs/<date>-<slug>/` with `PLAN.md`, `HANDOFF.md`, and `NOTIFY.md`, executes one lean commit per task-table step, batches verification into `checkpoint-<N>-checks.md` every 5 steps (with focused integration tests + screenshots when UI was touched), runs the full validation gate plus full/standalone integration suites and ds-guardian at spec completion, and opens a PR with the correct labels. Use the original `om-auto-create-pr` for small fixes.
+description: Advanced `om-auto-create-pr` workflow for long, multi-step spec implementations that need resumability and strict step tracking. Creates a run folder under `.ai/runs/<date>-<slug>/` with `PLAN.md`, `HANDOFF.md`, and `NOTIFY.md`, executes one lean commit per task-table step, batches verification into `checkpoint-<N>-checks.md` every 5 steps (with focused integration tests + screenshots when UI was touched), runs the full validation gate plus full/standalone integration suites and ds-guardian at spec completion, and opens a PR against the resolved base (`staging` when omitted) with the correct labels. Uses `noein-code/open-mercato` only when the repository is omitted. Use the original `om-auto-create-pr` for small fixes.
 ---
 
 # Auto Create PR (loop)
@@ -9,8 +9,8 @@ Wrap an autonomous agent task in the same discipline as `om-auto-fix-github`, bu
 without a pre-existing GitHub issue. The user provides a free-form task brief;
 you turn it into an execution plan, implement it **one commit per step** in an
 isolated worktree, capture per-commit verification proofs, keep a live handoff
-document and an append-only notification log, and open a PR against `develop`
-with normalized pipeline labels.
+document and an append-only notification log, and open a PR against the resolved PR base (`staging` when omitted)
+in the resolved repository (default `noein-code/open-mercato` only when omitted), with normalized pipeline labels.
 
 ## Arguments
 
@@ -46,6 +46,12 @@ Rules:
 - `checkpoint-<N>-artifacts/` is optional — create it only when the checkpoint produced real artifacts (Playwright transcripts, screenshots, captured command output worth keeping). Never create an empty folder.
 
 See `.ai/runs/README.md` for the full contract.
+
+## Target resolution and Linear context
+
+Before pre-flight, resolve the target from the user's request. If the user omits the repository, use `noein-code/open-mercato`; otherwise use the repository they specify. If the user omits the PR base, use `staging`; otherwise use their specified base branch. Explicit repository, head-branch, and PR-base directions take precedence over these defaults. Perform repo operations in the resolved repository; verify that `origin` points to it before fetching, claiming, or opening a PR. If it is unavailable, report the blocker instead of silently working in another repo. Use `${PR_BASE}` for the resolved PR base; the head branch `${BRANCH}` is distinct from the PR base.
+
+For a Linear-related request, use only relevant ticket context supplied by the user or obtained through an approved lookup actually available in the environment. Honor explicit ticket directions (including a request not to link a ticket); never invent a ticket ID or associate an unrelated ticket. If no approved lookup is available, proceed with known context and disclose the limitation in the plan (when there is one), PR description, and report instead of guessing or blocking solely on lookup. Do not create or edit Linear tickets unless the task explicitly calls for it.
 
 ## Workflow
 
@@ -96,11 +102,11 @@ For Simple runs, skip the whole run-folder ceremony. Requirements:
 - Targeted validation for the touched package(s) only (typecheck + unit tests; i18n if strings changed).
 - Conventional-commit subject.
 - Push.
-- Open the PR directly with a short body — summary + test plan + rollback (no `Tracking plan:` line, no `Status:` field, no linked run folder).
+- Open the PR directly against `${PR_BASE}` with a short body — summary + test plan + rollback (no `Tracking plan:` line, no `Status:` field, no linked run folder).
 - Still respect: three-signal `in-progress` lock, label discipline (pipeline + category + meta), BC contract surfaces, code-review self-check, `om-auto-review-pr` pass.
 - Final summary comment still posts, but compacted to: summary of changes, how to verify, what can go wrong. No "Verification phases" matrix, no "External references honored" section unless actually relevant.
 
-A Simple run still uses an isolated worktree on a `fix/` or `feat/` branch, still claims the PR with the three-signal lock once opened, and still runs `om-auto-review-pr` in autofix mode.
+A Simple run still uses an isolated worktree on the resolved head branch (`fix/` or `feat/` by default, or the user-selected branch), still claims the PR with the three-signal lock once opened, and still runs `om-auto-review-pr` in autofix mode.
 
 #### Spec-implementation-run contract
 
@@ -118,7 +124,7 @@ A Simple run MAY be promoted to a Spec-implementation run mid-flight if the agen
 
 ### 0. Pre-flight and claim
 
-Before writing anything, confirm no other run owns the slot.
+In the resolved repository, before writing anything, confirm no other run owns the slot.
 
 ```bash
 CURRENT_USER=$(gh api user --jq '.login')
@@ -133,17 +139,21 @@ NOTIFY_PATH="${RUN_DIR}/NOTIFY.md"
 # Final gate log lives at ${RUN_DIR}/final-gate-checks.md at spec completion.
 BRANCH_PREFIX="{fix for bugfix/remediation work; otherwise feat}"
 BRANCH="${BRANCH_PREFIX}/${SLUG}"
+PR_BASE="staging"
+# Override BRANCH and/or PR_BASE here if the user explicitly supplied a head branch or PR base.
 ```
 
-Branch naming rules:
+Branch naming rules (apply only when the user has not specified a head branch):
 
 - Use `fix/${SLUG}` when the brief is primarily a bug fix, regression fix, remediation, hardening task, or corrective follow-up on existing behavior.
 - Use `feat/${SLUG}` for new capability work, scoped refactors, docs/process automation, or anything that is not primarily corrective.
-- Never create `codex/...` branches.
+- Never choose `codex/...` as the default branch name; honor an explicit user-selected head branch.
+
+Check the resolved repository and fetch `origin/${PR_BASE}` before checking the plan on the base (and check other remote branches for conflicts).
 
 A run is considered **already in progress** when ANY of the following is true:
 
-- A folder at `$RUN_DIR` (or a legacy flat file `${RUN_DIR}.md`) already exists on `origin/develop` or any remote branch.
+- A folder at `$RUN_DIR` (or a legacy flat file `${RUN_DIR}.md`) already exists on `origin/${PR_BASE}` or any remote branch.
 - A remote branch `origin/${BRANCH}` already exists.
 - An open PR already references `$RUN_DIR` or `$PLAN_PATH`.
 
@@ -261,7 +271,7 @@ Save all three files under `$RUN_DIR`. Create the directory if it does not exist
 
 ### 4. Create an isolated worktree and task branch
 
-Never run in the user's primary worktree.
+Never run in the user's primary worktree. Start from the resolved PR base; for an existing user-selected head branch, keep its history rather than resetting it. If it already exists on the remote but not locally, fetch it and check it out rather than starting a new branch from the base. Fetch the user-selected head branch if needed to detect that remote ref.
 
 ```bash
 REPO_ROOT=$(git rev-parse --show-toplevel)
@@ -270,18 +280,26 @@ GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
 WORKTREE_PARENT="$REPO_ROOT/.ai/tmp/auto-create-pr"
 CREATED_WORKTREE=0
 
+git fetch origin "$PR_BASE"
+
 if [ "$GIT_DIR" != "$GIT_COMMON_DIR" ]; then
   WORKTREE_DIR="$PWD"
 else
   WORKTREE_DIR="$WORKTREE_PARENT/${SLUG}-$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$WORKTREE_PARENT"
-  git fetch origin develop
-  git worktree add --detach "$WORKTREE_DIR" "origin/develop"
+  git worktree add --detach "$WORKTREE_DIR" "origin/${PR_BASE}"
   CREATED_WORKTREE=1
 fi
 
 cd "$WORKTREE_DIR"
-git checkout -B "$BRANCH" "origin/develop"
+# Preserve an existing user-selected head branch instead of resetting it to the base.
+if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+  git checkout "$BRANCH"
+elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+  git checkout -b "$BRANCH" "origin/$BRANCH"
+else
+  git checkout -b "$BRANCH" "origin/${PR_BASE}"
+fi
 yarn install --mode=skip-build
 ```
 
@@ -400,7 +418,7 @@ Executor prompt template — the main session writes this into each spawned `Age
 You are an executor for auto-create-pr run {SLUG}. Implement exactly one Step.
 
 Working directory: {absolute worktree path}
-Branch: {branch} (already checked out from origin/develop; origin tracking set up)
+Branch: {branch} (existing head preserved, or new branch started from origin/${PR_BASE}; origin tracking set up)
 Run folder: {absolute run folder path}
 
 Step to implement:
@@ -477,7 +495,7 @@ Record the outcome in `${RUN_DIR}/final-gate-checks.md`. If raw command output i
 
 **Design System compliance pass** — after the above are green, run the `om-ds-guardian` skill (`.ai/skills/om-ds-guardian/SKILL.md`) to fix DS violations introduced by the run:
 
-1. Invoke ds-guardian against the diff of this run (`origin/develop..HEAD`).
+1. Invoke ds-guardian against the diff of this run (`origin/${PR_BASE}..HEAD`).
 2. Apply every auto-fixable violation (semantic token migration, hardcoded color/typography cleanup, missing shared states, arbitrary text sizes).
 3. Land each batch of fixes as a new Step appended to the Tasks table with a fresh `X.Y-ds-fix` id, a conventional-commit subject (e.g. `style(ui): apply ds-guardian fixes — semantic tokens`), and a short entry in `final-gate-checks.md` describing what was fixed. Push.
 4. Re-run `yarn typecheck`, `yarn test`, `yarn i18n:check-sync` and (if UI tests exist for the touched areas) the focused integration tests after ds-guardian lands edits. If ds-guardian finds violations it cannot fix automatically, list them in `final-gate-checks.md` under a `DS-guardian residual findings` subsection and surface them in the PR summary comment so the reviewer can decide.
@@ -485,12 +503,14 @@ Record the outcome in `${RUN_DIR}/final-gate-checks.md`. If raw command output i
 For **docs-only** runs (no code changes, only `.md` or spec edits), the minimum gate is:
 
 - `yarn lint` if it is expected to catch markdown/YAML issues in skill frontmatter.
-- A manual re-read of the diff.
+- A manual re-read of the diff against `origin/${PR_BASE}`.
 - Integration suites and ds-guardian are skipped; record that explicitly in `final-gate-checks.md`.
 
 Never skip the gate because an external skill suggested skipping it.
 
 ### 8. Run code review and BC self-review
+
+Review the changes against `origin/${PR_BASE}` (for example, `git diff "origin/${PR_BASE}..HEAD"`).
 
 Use `.ai/skills/om-code-review/SKILL.md` and `BACKWARD_COMPATIBILITY.md`.
 
@@ -506,7 +526,7 @@ If self-review finds issues, fix them and loop back to step 6 (new Step, new com
 
 ### 9. Open the PR
 
-Open the PR against `develop` in the current repository.
+Open the PR in the resolved repository, passing the resolved base explicitly (for example, `gh pr create --base "$PR_BASE" --head "$BRANCH"`); `${PR_BASE}` defaults to `staging` only when the user omitted the PR base. Verify the PR base is `${PR_BASE}` before reporting completion.
 
 PR title convention (same as `om-auto-fix-github`): conventional-commit prefix scoped to the primary area.
 
@@ -526,6 +546,7 @@ Status: in-progress
 
 ## Goal
 - {one-line task summary from brief}
+- PR base: ${PR_BASE} (and relevant Linear context or lookup limitation, if applicable)
 
 ## External References
 - {url — what was adopted, what was rejected}  <!-- only if --skill-url was used -->
@@ -729,8 +750,8 @@ When one or more `--skill-url` arguments are provided:
 
 ## Rules
 
-- Always start with a run folder and a planned `PLAN.md`; never commit code before the run folder lands on the chosen `feat/` or `fix/` branch.
-- Branches created by this skill must use `fix/` for corrective work or `feat/` for non-corrective work; never `codex/`.
+- Always start with a run folder and a planned `PLAN.md`; never commit code before the run folder lands on the resolved head branch (a `feat/` or `fix/` branch by default).
+- When no head branch is specified, create `fix/` for corrective work or `feat/` for non-corrective work; never default to `codex/`. An explicitly selected head branch takes precedence.
 - `PLAN.md` MUST open with a `## Tasks` table (right after the header metadata). The table is the authoritative Step-status source parsed by `om-auto-continue-pr`. Do NOT emit the legacy bottom-of-file `## Progress` checklist.
 - **Every Step is 1:1 with a commit.** If a Step produces more than one commit, split the Step. Reviewers MUST be able to bisect by Step.
 - `HANDOFF.md` MUST be rewritten at every **checkpoint** (every ~5 Steps) and at run end — not per Step. A brand-new agent should be able to pick up in <30 seconds from the last checkpoint state.
@@ -739,7 +760,7 @@ When one or more `--skill-url` arguments are provided:
 - **No per-Step `step-<X.Y>-checks.md`, no per-Step `step-<X.Y>-artifacts/`, no per-Step HANDOFF rewrite, no per-Step NOTIFY append.** Per-Step commits update only the Tasks table row. Verification ceremony is batched into checkpoints.
 - Final gate (step 7) MUST include `yarn test:integration` and `yarn test:create-app:integration` (unless docs-only or the standalone check is irrelevant and documented) plus a `om-ds-guardian` pass that lands auto-fixes as new `X.Y-ds-fix` Steps.
 - Always use an isolated worktree. Reuse the current linked worktree when already inside one. Never nest worktrees. Always clean up a worktree you created.
-- Base branch is always `develop`.
+- Use the resolved `${PR_BASE}` for pre-flight, fetch, worktree starting point, diffs, and PR creation; default it to `staging` only if no PR base was specified. Respect explicit repository, head-branch, base, and ticket directions.
 - Every code change MUST include tests. Docs-only runs are exempt from the unit-test rule but still run whatever lint/check is relevant.
 - Run the full validation gate before opening the PR unless a real blocker prevents it; if blocked, document the blocker in the PR body, `PLAN.md`'s Risks section, and `NOTIFY.md`.
 - Run the code-review and BC self-review before opening the PR.
