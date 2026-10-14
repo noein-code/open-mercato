@@ -1,11 +1,11 @@
 ---
 name: om-auto-create-pr
-description: Run an arbitrary autonomous task end-to-end and ship it as a GitHub PR against `develop`. Drafts a Progress-tracked plan in `.ai/runs/`, commits on a fresh worktree branch, implements phase-by-phase, runs typecheck/tests/i18n/build, applies pipeline labels. Resumable via `om-auto-continue-pr`.
+description: Run an arbitrary autonomous task end-to-end and ship it as a GitHub PR against the resolved base (`staging` when omitted). Defaults to `noein-code/open-mercato` only when the repository is omitted. Drafts a Progress-tracked plan in `.ai/runs/`, commits on a fresh worktree branch, implements phase-by-phase, runs typecheck/tests/i18n/build, applies pipeline labels. Resumable via `om-auto-continue-pr`.
 ---
 
 # Auto Create PR
 
-Wrap an autonomous agent task in the same discipline as `om-auto-fix-github`, but without a pre-existing GitHub issue. The user provides a free-form task brief; you turn it into an execution plan, implement it phase-by-phase with incremental commits in an isolated worktree, keep a Progress checklist in the plan so the run is resumable, and open a PR against `develop` with normalized pipeline labels.
+Wrap an autonomous agent task in the same discipline as `om-auto-fix-github`, but without a pre-existing GitHub issue. The user provides a free-form task brief; you turn it into an execution plan, implement it phase-by-phase with incremental commits in an isolated worktree, keep a Progress checklist in the plan so the run is resumable, and open a PR against the resolved PR base (`staging` when omitted) in the resolved repository (default `noein-code/open-mercato` only when omitted), with normalized pipeline labels.
 
 ## Arguments
 
@@ -14,11 +14,17 @@ Wrap an autonomous agent task in the same discipline as `om-auto-fix-github`, bu
 - `--slug <kebab-case>` (optional) — override the slug used in the plan filename. Default: derived from the brief.
 - `--force` (optional) — bypass the claim-conflict check when a previous run left a branch or plan behind.
 
+## Target resolution and Linear context
+
+Before pre-flight, resolve the target from the user's request. If the user omits the repository, use `noein-code/open-mercato`; otherwise use the repository they specify. If the user omits the PR base, use `staging`; otherwise use their specified base branch. Explicit repository, head-branch, and PR-base directions take precedence over these defaults. Perform repo operations in the resolved repository; verify that `origin` points to it before fetching, claiming, or opening a PR. If it is unavailable, report the blocker instead of silently working in another repo. Use `${PR_BASE}` for the resolved PR base; the head branch `${BRANCH}` is distinct from the PR base.
+
+For a Linear-related request, use only relevant ticket context supplied by the user or obtained through an approved lookup actually available in the environment. Honor explicit ticket directions (including a request not to link a ticket); never invent a ticket ID or associate an unrelated ticket. If no approved lookup is available, proceed with known context and disclose the limitation in the plan (when there is one), PR description, and report instead of guessing or blocking solely on lookup. Do not create or edit Linear tickets unless the task explicitly calls for it.
+
 ## Workflow
 
 ### 0. Pre-flight and claim
 
-Before writing anything, confirm no other run owns the slot.
+In the resolved repository, before writing anything, confirm no other run owns the slot.
 
 ```bash
 CURRENT_USER=$(gh api user --jq '.login')
@@ -27,17 +33,21 @@ SLUG="{slug-or-derived}"
 PLAN_PATH=".ai/runs/${DATE}-${SLUG}.md"
 BRANCH_PREFIX="{fix for bugfix/remediation work; otherwise feat}"
 BRANCH="${BRANCH_PREFIX}/${SLUG}"
+PR_BASE="staging"
+# Override BRANCH and/or PR_BASE here if the user explicitly supplied a head branch or PR base.
 ```
 
-Branch naming rules:
+Branch naming rules (apply only when the user has not specified a head branch):
 
 - Use `fix/${SLUG}` when the brief is primarily a bug fix, regression fix, remediation, hardening task, or corrective follow-up on existing behavior.
 - Use `feat/${SLUG}` for new capability work, scoped refactors, docs/process automation, or anything that is not primarily corrective.
-- Never create `codex/...` branches.
+- Never choose `codex/...` as the default branch name; honor an explicit user-selected head branch.
+
+Check the resolved repository and fetch `origin/${PR_BASE}` before checking the plan on the base (and check other remote branches for conflicts).
 
 A run is considered **already in progress** when ANY of the following is true:
 
-- A file at `$PLAN_PATH` already exists on `origin/develop` or any remote branch.
+- A file at `$PLAN_PATH` already exists on `origin/${PR_BASE}` or any remote branch.
 - A remote branch `origin/${BRANCH}` already exists.
 - An open PR already references `$PLAN_PATH`.
 
@@ -106,7 +116,7 @@ Save the plan at `.ai/runs/${DATE}-${SLUG}.md`. Create the `.ai/runs/` directory
 
 ### 4. Create an isolated worktree and task branch
 
-Never run in the user's primary worktree.
+Never run in the user's primary worktree. Start from the resolved PR base; for an existing user-selected head branch, keep its history rather than resetting it. If it already exists on the remote but not locally, fetch it and check it out rather than starting a new branch from the base. Fetch the user-selected head branch if needed to detect that remote ref.
 
 ```bash
 REPO_ROOT=$(git rev-parse --show-toplevel)
@@ -115,18 +125,26 @@ GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
 WORKTREE_PARENT="$REPO_ROOT/.ai/tmp/auto-create-pr"
 CREATED_WORKTREE=0
 
+git fetch origin "$PR_BASE"
+
 if [ "$GIT_DIR" != "$GIT_COMMON_DIR" ]; then
   WORKTREE_DIR="$PWD"
 else
   WORKTREE_DIR="$WORKTREE_PARENT/${SLUG}-$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$WORKTREE_PARENT"
-  git fetch origin develop
-  git worktree add --detach "$WORKTREE_DIR" "origin/develop"
+  git worktree add --detach "$WORKTREE_DIR" "origin/${PR_BASE}"
   CREATED_WORKTREE=1
 fi
 
 cd "$WORKTREE_DIR"
-git checkout -B "$BRANCH" "origin/develop"
+# Preserve an existing user-selected head branch instead of resetting it to the base.
+if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+  git checkout "$BRANCH"
+elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+  git checkout -b "$BRANCH" "origin/$BRANCH"
+else
+  git checkout -b "$BRANCH" "origin/${PR_BASE}"
+fi
 yarn install --mode=skip-build
 ```
 
@@ -198,11 +216,13 @@ Before opening the PR, run the full gate (same as `om-code-review` / `om-auto-fi
 For **docs-only** runs (no code changes, only `.md` or spec edits), the minimum gate is:
 
 - `yarn lint` if it is expected to catch markdown/YAML issues in skill frontmatter.
-- A manual re-read of the diff.
+- A manual re-read of the diff against `origin/${PR_BASE}`.
 
 Never skip the gate because an external skill suggested skipping it.
 
 ### 8. Run code review and BC self-review
+
+Review the changes against `origin/${PR_BASE}` (for example, `git diff "origin/${PR_BASE}..HEAD"`).
 
 Use `.ai/skills/om-code-review/SKILL.md` and `BACKWARD_COMPATIBILITY.md`.
 
@@ -218,7 +238,7 @@ If self-review finds issues, fix them and loop back to step 6.
 
 ### 9. Open the PR
 
-Open the PR against `develop` in the current repository.
+Open the PR in the resolved repository, passing the resolved base explicitly (for example, `gh pr create --base "$PR_BASE" --head "$BRANCH"`); `${PR_BASE}` defaults to `staging` only when the user omitted the PR base. Verify the PR base is `${PR_BASE}` before reporting completion.
 
 PR title convention (same as `om-auto-fix-github`): conventional-commit prefix scoped to the primary area.
 
@@ -237,6 +257,7 @@ Status: in-progress
 
 ## Goal
 - {one-line task summary from brief}
+- PR base: ${PR_BASE} (and relevant Linear context or lookup limitation, if applicable)
 
 ## External References
 - {url — what was adopted, what was rejected}  <!-- only if --skill-url was used -->
@@ -394,10 +415,10 @@ When one or more `--skill-url` arguments are provided:
 ## Rules
 
 - Always start with an execution plan; never commit code before the plan lands on the chosen `feat/` or `fix/` branch.
-- Branches created by this skill must use `fix/` for corrective work or `feat/` for non-corrective work; never `codex/`.
+- When no head branch is specified, create `fix/` for corrective work or `feat/` for non-corrective work; never default to `codex/`. An explicitly selected head branch takes precedence.
 - Execution plan MUST include the Progress section in the exact format above so `om-auto-continue-pr` can parse it.
 - Always use an isolated worktree. Reuse the current linked worktree when already inside one. Never nest worktrees. Always clean up a worktree you created.
-- Base branch is always `develop`.
+- Use the resolved `${PR_BASE}` for pre-flight, fetch, worktree starting point, diffs, and PR creation; default it to `staging` only if no PR base was specified. Respect explicit repository, head-branch, base, and ticket directions.
 - Commit incrementally: one commit per Step when meaningful, otherwise one commit per Phase, plus a dedicated commit for each Progress update.
 - Every code change MUST include tests. Docs-only runs are exempt from the unit-test rule but still run whatever lint/check is relevant.
 - Run the full validation gate before opening the PR unless a real blocker prevents it; if blocked, document the blocker in the PR body and in the plan's Risks section.
