@@ -106,7 +106,7 @@ For Simple runs, skip the whole run-folder ceremony. Requirements:
 - Still respect: three-signal `in-progress` lock, label discipline (pipeline + category + meta), BC contract surfaces, code-review self-check, `om-auto-review-pr` pass.
 - Final summary comment still posts, but compacted to: summary of changes, how to verify, what can go wrong. No "Verification phases" matrix, no "External references honored" section unless actually relevant.
 
-A Simple run still uses an isolated worktree on a `fix/` or `feat/` branch, still claims the PR with the three-signal lock once opened, and still runs `om-auto-review-pr` in autofix mode.
+A Simple run still uses an isolated worktree on the resolved head branch (`fix/` or `feat/` by default, or the user-selected branch), still claims the PR with the three-signal lock once opened, and still runs `om-auto-review-pr` in autofix mode.
 
 #### Spec-implementation-run contract
 
@@ -750,7 +750,7 @@ When one or more `--skill-url` arguments are provided:
 
 ## Rules
 
-- Always start with a run folder and a planned `PLAN.md`; never commit code before the run folder lands on the chosen `feat/` or `fix/` branch.
+- Always start with a run folder and a planned `PLAN.md`; never commit code before the run folder lands on the resolved head branch (a `feat/` or `fix/` branch by default).
 - When no head branch is specified, create `fix/` for corrective work or `feat/` for non-corrective work; never default to `codex/`. An explicitly selected head branch takes precedence.
 - `PLAN.md` MUST open with a `## Tasks` table (right after the header metadata). The table is the authoritative Step-status source parsed by `om-auto-continue-pr`. Do NOT emit the legacy bottom-of-file `## Progress` checklist.
 - **Every Step is 1:1 with a commit.** If a Step produces more than one commit, split the Step. Reviewers MUST be able to bisect by Step.

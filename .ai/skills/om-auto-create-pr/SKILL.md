@@ -414,7 +414,7 @@ When one or more `--skill-url` arguments are provided:
 
 ## Rules
 
-- Always start with an execution plan; never commit code before the plan lands on the chosen `feat/` or `fix/` branch.
+- Always start with an execution plan; never commit code before the plan lands on the resolved head branch (a `feat/` or `fix/` branch by default).
 - When no head branch is specified, create `fix/` for corrective work or `feat/` for non-corrective work; never default to `codex/`. An explicitly selected head branch takes precedence.
 - Execution plan MUST include the Progress section in the exact format above so `om-auto-continue-pr` can parse it.
 - Always use an isolated worktree. Reuse the current linked worktree when already inside one. Never nest worktrees. Always clean up a worktree you created.
